@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+
+#
+# (C) Alain Lichnewsky, 2025
+
+#---------------------------------------------------------------------
+# Setable parms: default logging option, absolute path to real vscoqtop
+logging = False
+vscoqtop_path =  "/mount/built/opam/CP.~8.20~2025.01/bin/vscoqtop"
+#---------------------------------------------------------------------
+
+what = """
+    Simple minded wrapper to change the working dir and call vscoqtop.
+    Intended to work when connecting to Coq in a remote (tested with
+    Docker containers and ssh)
+
+    accepts flags
+    --wd <working_dir_path> preferably absolute !
+    --log
+
+    The idea is that vscoqtop relies on its working directory, 
+    where it expects to find _CoqProject and the top of the
+    libraries directory tree.    Therefore when vscoq connects with 
+    ssh, there are little  means to change this in a flexible way.
+
+    This wrapper permits to establish a working directory before
+    calling. 
+
+    To use it, set  (example for ssh)
+       "vscoq.args": [  "--wd", <the working dir on remote> [ , "--log"] ],
+       "vscoq.path": "ssh <your parms> <your realpath>/vscoqtopWrapper"
+
+"""
+
+
+import sys
+
+import os
+import subprocess
+
+
+
+def usage(excde):
+    show(what)
+    sys.exit(excde)
+
+def show(*args):
+    print(*args, file=sys.stderr)
+
+def doLog(*args):
+    if logging:
+        for arg in args:
+            subprocess.run(["logger", arg])
+
+def main():
+    if "--wd" not in sys.argv:
+        show("Error: --wd parameter is required")
+        usage(1)
+
+    wd_index = sys.argv.index("--wd")
+    if wd_index + 1 >= len(sys.argv):
+        show("Error: --wd parameter requires a value")
+        usage(1)
+
+    working_dir = sys.argv[wd_index + 1]
+    if working_dir.startswith("-"):
+        show("Error: working dir starts like flag with '-'")
+        sys.exit(2)
+    arglist =   sys.argv[1:wd_index] + sys.argv[wd_index + 2:]
+
+    if "--log" in arglist:
+        log_index = arglist.index("--log")
+        logging = True
+        arglist= arglist[:log_index] + arglist[log_index+1:]
+    
+    command =[ vscoqtop_path ] + arglist
+
+
+    try:
+        doLog("launching vscoqtop with wd=" + working_dir)
+
+        os.chdir(working_dir)
+        result = subprocess.run(command)
+
+        doLog("vscoqtop ended with retcode=" + f"{result}" )
+
+        sys.exit(result.returncode)
+    except Exception as e:
+        show(f"Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
