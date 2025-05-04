@@ -2,7 +2,9 @@
 
 ## Summary
 
-Wrapper code to help using extension Vscoq of VScode when connecting remotely (ssh, containers,...). Sets working dir in accordance with `_CoqProject`and library tree.
+This addresses the issue "*Cannot find a physical path...*" when `Require Import`, when connected to a remote (eg. with `ssh`).
+
+Wrapper code help with using extension **Vscoq** of **VScode** when connecting remotely (ssh, containers,...), by setting working directory in accordance with `_CoqProject`and library tree.
 
 ## Note
 
@@ -28,19 +30,26 @@ Wrapper code to help using extension Vscoq of VScode when connecting remotely (s
 
 1. The idea is that `vscoqtop` relies on its working directory,
     where it expects to find `_CoqProject` and the top of the
-    libraries directory tree.    Therefore when vscoq connects
-    remotenly, (e.g. with `ssh`), there are little  means to
-    change this in a flexible way.
+    libraries directory tree. Looking at the
+code <https://github.com/rocq-prover/vscoq/blob/main/language-server/vscoqtop/vscoqtop.ml>, this seems rather wired in (at least for the time being:
 
-    This wrapper permits to establish a working directory before
+    ```
+    let cwd = Unix.getcwd () in
+      let opts = Args.get_local_args cwd in
+        let () = Coqinit.init_runtime ....
+    ```
+
+   Therefore when vscoq connects
+    remotenly, (e.g. with `ssh`), there are little  means to
+    change this in a flexible way. This wrapper permits to establish a working directory before
     calling `vscoqtop` on the remote.
 
-    To use it, parametrize `vscoq`  (example for `ssh`)
+1.    To use it, parametrize `vscoq`  (example for `ssh`)
 
-    ~~~ xxx
-       "vscoq.args": [  "--wd", <the working dir on remote> [ , "--log"] ],
-       "vscoq.path": "ssh <your parms> <your realpath>/vscoqtopWrapper"
-    ~~~~
+    ```
+    "vscoq.args": [  "--wd", <the working dir on remote> [ , "--log"] ],
+    "vscoq.path": "ssh <your parms> <your realpath>/vscoqtopWrapper"
+    ```
 
 ### Easily configurable version vscoqtopEZWrap
 
