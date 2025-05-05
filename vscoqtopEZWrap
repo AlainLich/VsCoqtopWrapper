@@ -116,7 +116,7 @@ def launch_vsctop(options, other_args):
     command = [vsctop_path] + other_args
 
     try:
-        if options.get("doDryRun", False):
+        if options.get("dodryrun", False):
             show(f"Dry run: {working_dir=}",
                  f"\n\tCommand to be exec'd {command}")
             sys.exit(0)
@@ -204,6 +204,7 @@ class NoDuplicateAction(argparse.Action):
 
 def main():
     global debug_mode
+    global logging
 
     # used to parse the .ini config file, parsing proper in function iniFileRead
     # where inifile name and path are defined
@@ -243,7 +244,7 @@ def main():
     argLineParser.add_argument("--dry_run" ,
                                 action=argparse.BooleanOptionalAction, 
                                 default=False, 
-                                dest="doDryRun",
+                                dest="dodryrun",
                                 help="dry run, no action taken")
 
     argLineParser.add_argument("--working_dir" , type=str,
@@ -261,7 +262,7 @@ def main():
     argLineParser.add_argument("--log",
                                 action=argparse.BooleanOptionalAction, 
                                 default=False, 
-                                dest="doLog",
+                                dest="dolog",
                                 help="Log on via system's logger")
 
     try:
@@ -298,7 +299,7 @@ def main():
         else:
                 iniSection = None
                 fusedOptions = { }
-                for k in ("workingdir", "vscoqtop_path", "doDryRun"):
+                for k in ("workingdir", "vscoqtop_path", "dodryrun"):
                     vo  = vars(options)[k]
                     if vo is not None:       
                         fusedOptions[k] = vo
@@ -312,6 +313,8 @@ def main():
             print (description)
             sys.exit(0)
 
+        logging =  fusedOptions.get("dolog", False)
+     
         # go do it!
         launch_vsctop(fusedOptions,other_args)
 
