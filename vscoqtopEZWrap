@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+
+"""
+    Better wrapper to change the working dir and call vscoqtop.
+    Intended to work when connecting to Coq in a remote (tested with
+    Docker containers and ssh)
+
+    Adds ability to manage several projects configurations declaring 
+    them in a .ini file
+
+    (C) Alain Lichnewsky, 2025, MIT License
+"""
+
+#---------------------------------------------------------------------
+
+import sys
+import os, stat
+import traceback
+import shutil
+import shlex
+
+from enum import Enum
+import re
+
+from pathlib import Path, PurePath 
+
+import argparse
+from configparser import ConfigParser, ExtendedInterpolation
+
+import subprocess
+
+#---------------------------------------------------------------------
+
+description = """
+    Better wrapper to change the working dir and call vscoqtop.
+    Intended to work when connecting to Coq in a remote (tested with
+    Docker containers and ssh)
+
+    The idea is that vscoqtop relies on its working directory, 
+    where it expects to find _CoqProject and the top of the
+    libraries directory tree.    Therefore when vscoq connects with 
+    ssh, there are little  means to change this in a flexible way.
+
+    Adds ability to manage several projects configurations declaring 
+    them in a .ini file
+
+    accepts flags
+    --ini-path: path to search for the .ini file, defaults to ${HOME}
+    --ini-file: file name of iniFile
+    --iniSection: section in ini file to be considered, defaults to "base"
+    --Debug: debug mode, ensures that errors issue tracebacks
+    --dry_run: do nothing, test arguments,...
+    --log: show activity via system logger
+    
+    The following flags may override .inifile parameters, and must be 
+    used if no inifile is provided
+
+    --wd <working_dir_path>
+    --vscoqtop <vscoqtop path>
+
+    This wrapper permits to establish a working directory before
+    calling. 
+
+    To use it, set  (examples for ssh)
+       "vscoq.args": [  "--wd", <the working dir on remote> [ , "--log"] ],
+       "vscoq.path": "ssh <your parms> <your realpath>/vscoqtopWrapper"
+
+    Alternatively, the use of .ini file allows the following:
+        "vscoq.args": [  "--ini-path", "mydir:myotherdir:",
+                         "--ini-file",  "thisproject.ini", 
+                         "--iniSection", "caseA",
+                         "--log"
+          ],
+        "vscoq.path": "ssh <your parms> <your realpath>/vscoqtopWrapper"
+
+"""
+
+# Global variable to help output debug information conditionnally
+debug_mode = 0
+logging = False
+
+
+#---------------------------------------------------------------------
+
+def usage(excde):
+    show(description)
+    sys.exit(excde)
+
+def show(*args):
+    print(*args, file=sys.stderr)
+
+def doLog(*args, dry_run=False):
+    if logging and not dry_run:
+        for arg in args:
+            subprocess.run(["logger", arg])
+
+def doError(msg):
+    show(msg)
+    doLog(msg)
+    raise RuntimeError(msg)
+
+#---------------------------------------------------------------------
+#.             Main functions
+#---------------------------------------------------------------------
+def launch_vsctop(options, other_args):
+    working_dir=options.get("workingdir")
+    vsctop_path=options.get("vscoqtop_path")
+
+
+    if vsctop_path is None:
+        doError("Empty vscoqtop_path: this is a required element")
+    if working_dir is None:
+        doError("Empty working dir: this is required")
+
+
+    command = [vsctop_path] + other_args
+
+    try:
+        if options.get("doDryRun", False):
+            show(f"Dry run: {working_dir=}",
+                 f"\n\tCommand to be exec'd {command}")
+            sys.exit(0)
+
+        doLog("launching vscoqtop with wd=" + working_dir)
+        os.chdir(working_dir)
+        result = subprocess.run(command)
+
+        doLog("vscoqtop ended with retcode=" + f"{result}" )
+
+        sys.exit(result.returncode)
+    except Exception as e:
+        show(f"Error: {e}")
+        raise
+
+
+#---------------------------------------------------------------------
+#               Arguments and Ini_file processing
+#---------------------------------------------------------------------
+
+#----------------------------------------------------------------------------------------
+#  Read the .ini configuration file
+#----------------------------------------------------------------------------------------
+def iniFileRead(configParser, fname, path):
+    """ 
+        Read the .ini file, and keep the context in the ConfigParser object
+
+        - fname: the name of the .ini file
+
+    """ 
+    dftPath = [ os.getcwd(), PurePath(os.getcwd())/PurePath("VSCoqWrapFilesParms") ]
+    if path:
+        pathcomps=[]
+        dejavu = False
+        for el in path.split(":"):
+            if el == "":
+                if not dejavu:
+                    pathcomps.extend(dftPath)
+                    dejavu = True
+                else:
+                    raise RuntimeError("Multiple empty path components (1:OK)")
+            else:
+                if el.startswith("~"):
+                    pathcomps.append(os.path.expanduser(el))
+                else:
+                    pathcomps.append(el)
+    else:
+        pathcomps = dftPath
+
+    for p in pathcomps:
+        if os.path.exists(os.path.join(p,fname)):
+            fname = os.path.join(p,fname)
+            ret = configParser.read(fname)
+            if len(ret) > 0:
+                return
+            else:
+                raise RuntimeError(f"Cannot read {fname}")
+            
+    raise RuntimeError(f"Cannot find 'ini file' '{fname}' in path '{pathcomps}'")
+
+
+def showFusedOptions(d, s, *,prefix="\n", postfix="\n"):
+    "Used in debug mode to output dicts stemming from merging options sources"
+    show (f"{prefix}Fused options in section:{s}")
+    for k in d:
+        sdk = d[k].name if isinstance (d[k],Enum) else str(d[k])
+        show ("\t" + str(k) + "\t" + sdk)
+    if postfix is not None:
+        show(postfix)
+
+
+class NoDuplicateAction(argparse.Action):
+    """
+        Used in add_arguments to specify that an optional argument cannot be repeated. 
+            This does not work when add_argument specifies a default.
+            Raises:
+                RuntimeError: Explain the error that occurred.
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            show(f"{namespace=}")
+            parser.error(f"Argument {option_string} cannot be specified multiple times.")
+        setattr(namespace, self.dest, values)
+
+
+def main():
+    global debug_mode
+
+    # used to parse the .ini config file, parsing proper in function iniFileRead
+    # where inifile name and path are defined
+    myConfigParser = ConfigParser(interpolation=ExtendedInterpolation(),
+                                    inline_comment_prefixes=('#',))
+        
+    allowed_ini_suffixes = [".ini", ".inifile", ".INI", ".config"]
+
+    argLineParser = argparse.ArgumentParser(
+        description = description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False  )
+
+    argLineParser.add_argument("--ini-path" , type=str,
+                                dest="iniPath",
+                                nargs='?', action=NoDuplicateAction, 
+                                help="provide the path to the .ini file, ':' separated")
+
+    argLineParser.add_argument("-i","--ini-file" , type=str,
+                    dest="iniFile",
+                    action=NoDuplicateAction, 
+                    help="Initialization of parameters (overriden)")
+
+    argLineParser.add_argument("-I","--iniSection" , type=str,
+                                dest="iniSection", 
+                                nargs='?', action=NoDuplicateAction, 
+                                help="Initialization of parameters (overriden)")
+
+    argLineParser.add_argument("-D","--Debug" ,action="count",
+                                dest="doDebug",
+                                default=0,
+                                help="Debug messages on stderr, no action")
+
+    argLineParser.add_argument("--dry","--dry_run" ,
+                                action=argparse.BooleanOptionalAction, 
+                                default=False, 
+                                dest="doDryRun",
+                                help="dry run, no action taken")
+
+    argLineParser.add_argument("-wd","--working_dir" , type=str,
+                        dest="workingdir",
+                        default=None,
+                        action=NoDuplicateAction, 
+                        help="Working dir used for vscoqtop on remote")
+    
+    argLineParser.add_argument("-vsct","--vscoqtop" , type=str,
+                        dest="vscoqtop_path",
+                        default=None,
+                        action=NoDuplicateAction, 
+                        help="Absolute path for vscoqtop")
+    
+    argLineParser.add_argument("--log",
+                                action=argparse.BooleanOptionalAction, 
+                                default=False, 
+                                dest="doLog",
+                                help="Log on via system's logger")
+
+    try:
+        options, other_args = argLineParser.parse_known_args()
+        if  options.doDebug and options.doDebug > 1:
+            sys.stderr.write (f"options:{repr(options)}\n")
+
+        if options.iniFile:
+            p_ini = Path(options.iniFile)
+            if len(p_ini.parts) > 1:
+                doError("--ini option is not simple filename")
+
+            if all(map( lambda x: not p_ini.name.endswith(x), allowed_ini_suffixes)):
+                raise RuntimeError(f"INI file '{p_ini}' not ending in:" 
+                                        + (", ".join(allowed_ini_suffixes)))
+
+            # parse .ini config file
+            inipath = vars(options).get("iniPath", os.path.expanduser("~"))
+            iniFileRead(myConfigParser, p_ini, inipath)
+
+            iniSection = vars(options).get("iniSection",None)
+            if iniSection is None:
+                iniSection = "base"
+            if myConfigParser.has_section(iniSection):
+                fusedOptions = dict(myConfigParser[iniSection])
+            else:
+                doError(f"INI file section '{iniSection}' not found in {p_ini}")
+
+            # command line args override config file
+            for k in vars(options):
+                vo  = vars(options)[k]
+                if vo is not None:        # skip elements not provided on CL defaulting to None
+                    fusedOptions[k] = vo
+        else:
+                iniSection = None
+                fusedOptions = { }
+                for k in ("workingdir", "vscoqtop_path", "doDryRun"):
+                    vo  = vars(options)[k]
+                    if vo is not None:       
+                        fusedOptions[k] = vo
+
+        if options.doDebug: 
+            debug_mode = int(options.doDebug)
+            showFusedOptions(fusedOptions, iniSection)
+        
+        # help stuff
+        if fusedOptions.get("showHelp"):
+            print (description)
+            sys.exit(0)
+
+        # go do it!
+        launch_vsctop(fusedOptions,other_args)
+
+    except (RuntimeError, KeyError) as err:
+        show ( f"Quitting because of error(s)\n\t{err}",
+                f"\n\tType: {type(err)}" )
+        
+        if options.doDebug:
+            traceback.print_exc()
+        sys.exit(1)
+
+    except (Exception) as err:
+        show ( f"Quitting because of unexpected error(s)\n\t{err}",
+                f"\n\tType: {type(err)}") 
+        
+        if options.doDebug:
+            traceback.print_exc()
+        sys.exit(1)
+
+    
+#---------------------------------------------------------------------
+
+if __name__ == "__main__":
+    main()
